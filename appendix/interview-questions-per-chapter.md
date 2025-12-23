@@ -334,13 +334,69 @@ Five questions per chapter: 2 conceptual, 2 design, 1 estimation.
 
 ---
 
-## Chapters 16-18
+## Chapter 16: ChatGPT
 
-*(Coming soon: Following the same pattern as above)*
+### Conceptual
+1. **Why does LLM inference have two distinct phases (prefill and decode), and why do they have different performance characteristics?**
+   - Expected: Prefill processes all input tokens in parallel (compute-bound), decode generates one token at a time using cached state (memory-bound). Prefill has high arithmetic intensity, decode is limited by memory bandwidth for reading KV cache.
 
-### Chapter 16: ChatGPT - Focus on GPU batching, KV cache, token streaming
-### Chapter 17: Meta Serverless - Focus on cold start, scheduling, container management
-### Chapter 18: Scaling - Focus on progressive architecture, when to add components
+2. **Explain how PagedAttention improves GPU memory utilization compared to traditional KV cache allocation.**
+   - Expected: Traditional allocation reserves contiguous memory for max sequence length, wasting memory for shorter sequences. PagedAttention uses virtual memory-like paging, allocating memory blocks on demand. Eliminates fragmentation, enables higher batch sizes (2-4x throughput improvement).
+
+### Design
+3. **Design a continuous batching system that handles variable-length requests without head-of-line blocking.**
+   - Expected: Track per-request state (sequence, KV cache pointer). Each decode step: generate token for all active sequences, evict completed sequences, add waiting requests to batch. Discuss iteration-level scheduling vs. request-level scheduling.
+
+4. **How would you implement a multi-model inference system that routes simple queries to a 7B model and complex queries to a 70B model?**
+   - Expected: Query classifier (embedding similarity, heuristics, or small model). Route by classification. Handle fallback (small model confidence too low → retry with large model). Discuss latency tradeoff of classifier step vs. cost savings.
+
+### Estimation
+5. **A 70B parameter model serves 50,000 requests/sec with average 200 tokens output. Estimate GPU requirements and cost.**
+   - Expected: 70B in FP16 = 140GB → needs 2 H100s (80GB each). At 1,600 tokens/sec per model instance, need 50,000 × 200 / 1,600 = ~6,250 model instances = 12,500 H100s. At $3/hour = $37.5K/hour = $27M/month. Reality: caching, batching, quantization reduce this 3-5x.
+
+---
+
+## Chapter 17: Meta Serverless
+
+### Conceptual
+1. **Why do serverless platforms typically have execution time limits (e.g., 30 seconds)? What breaks if you allow 10-minute functions?**
+   - Expected: Long functions: reduce bin packing efficiency (hold slots), complicate billing (per-100ms granularity loses meaning), delay other requests, make cold start optimization harder. Platforms assume short, stateless functions for efficiency.
+
+2. **Explain the tradeoffs between container-based isolation (like Docker) and microVM isolation (like Firecracker) for serverless.**
+   - Expected: Containers: fast start (~50ms), high density (100+/host), process-level isolation (weaker security). MicroVMs: slower start (~125ms), lower density, hardware-level isolation (stronger security). For multi-tenant cloud: microVMs. For internal platform (Meta): containers are acceptable.
+
+### Design
+3. **Design a predictive container warming system that minimizes cold starts while not wasting resources on unused containers.**
+   - Expected: ML model with features: time of day, day of week, recent invocation pattern, event triggers. Predict invocations for next N minutes. Warm containers to match prediction. Balance false positive cost (idle container) vs. false negative cost (cold start latency). Use historical accuracy to tune aggressiveness.
+
+4. **How would you implement fair scheduling across 1,000 teams sharing the same serverless platform?**
+   - Expected: Per-team quotas (CPU, memory, invocations). Token bucket rate limiting. Priority tiers. Burst allowance with repayment. Dashboard for visibility. Discuss tradeoffs: strict quotas vs. statistical multiplexing.
+
+### Estimation
+5. **A serverless platform handles 11.5 million invocations/second with P99 cold start < 200ms. Estimate host fleet size and cold start percentage.**
+   - Expected: At 2,560 req/sec per host, need ~4,500 hosts for capacity. With 45% utilization target, ~10,000 hosts. Cold starts at 200ms mean any function invoked less than every 5 minutes is cold. If 80% of traffic is "warm" (popular functions), cold start rate = 20% of first-time calls. Maybe 5% overall.
+
+---
+
+## Chapter 18: Scaling to 10 Million Users
+
+### Conceptual
+1. **Why might adding a read replica at 10,000 users be premature optimization, but not adding it at 100,000 users be a crisis?**
+   - Expected: At 10K users: single PostgreSQL handles load easily, replica adds operational overhead (replication lag, connection management) without benefit. At 100K: database CPU at 80%, p99 latency degrading, no headroom for traffic spikes. Timing matters—add components when metrics show need, not when "best practices" suggest.
+
+2. **What's the difference between extracting a microservice and creating a modular monolith? When would you choose each?**
+   - Expected: Microservice: separate deployment, separate runtime, network boundary. Modular monolith: single deployment, in-process boundaries, function calls. Microservice when: different scaling needs, different tech stacks, different teams with autonomous deployment. Modular monolith when: same team, same scaling, want code organization without operational complexity.
+
+### Design
+3. **You have 1 million US users and are launching in Europe. EU users see 300ms latency. Design the minimum viable multi-region architecture.**
+   - Expected: Phase 1 (2 weeks): CDN for static assets, API caching at edge (Cloudflare Workers), reduces latency for cacheable content. Phase 2 (2 months): Read replica in EU, route read-heavy APIs to EU replica. Phase 3 (6 months): Full EU region with write path. Consider GDPR requirements for EU data residency.
+
+4. **Your cloud bill is 60% of revenue at 5 million users. Design a cost optimization strategy that reduces costs by 40% without impacting user experience.**
+   - Expected: Step 1: Visibility—cost attribution by service/feature. Step 2: Quick wins—right-size instances, reserved instances (30% savings), spot for batch workloads. Step 3: Architecture—caching reduces compute, data tiering reduces storage, compression reduces egress. Step 4: Code optimization—inefficient queries, N+1 problems.
+
+### Estimation
+5. **At what user count does database sharding typically become necessary? Work through the math for a social app with 5 posts/user/day.**
+   - Expected: PostgreSQL can handle ~10K writes/sec on large instance. 5 posts/user/day + reads/metadata = ~10 ops/user/day. At 10K writes/sec capacity = 86M ops/day = ~8.6M users before write capacity issue. But other limits (single table size, replication lag, query complexity) often hit earlier. Practical answer: most apps hit ~5-10M users before needing sharding.
 
 ---
 
