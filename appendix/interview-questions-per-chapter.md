@@ -224,15 +224,120 @@ Five questions per chapter: 2 conceptual, 2 design, 1 estimation.
 
 ---
 
-## Chapters 11-18
+## Chapter 11: Bluesky
 
-*(Following the same pattern: 2 conceptual, 2 design, 1 estimation per chapter)*
+### Conceptual
+1. **Why does Bluesky use DIDs (Decentralized Identifiers) instead of traditional usernames for identity?**
+   - Expected: DIDs are cryptographic identifiers that users own. If a server bans you or shuts down, your DID persists. Usernames (handles) are just human-readable aliases pointing to DIDs.
 
-### Chapter 11: Bluesky - Focus on DIDs, AT Protocol, feed generators
-### Chapter 12: Tinder - Focus on geospatial indexing, ELO scoring, bloom filters
-### Chapter 13: Uber - Focus on H3, real-time matching, ETA calculation
-### Chapter 14: Stock Exchange - Focus on matching engines, latency, sequencing
-### Chapter 15: Stripe - Focus on idempotency, distributed transactions, reconciliation
+2. **How do feed generators enable algorithm choice, and why is this architecturally significant?**
+   - Expected: Feed generators are external services that query the public firehose and apply custom ranking. Users subscribe to feeds they trust. This separates content curation from the platform itself.
+
+### Design
+3. **Design the relay/firehose system that aggregates events from all Personal Data Servers (PDSs).**
+   - Expected: Fan-in from PDSs, signature validation, event ordering, fan-out to App Views. Discuss scaling (sharding by PDS), backpressure handling, and catchup for disconnected consumers.
+
+4. **How would you implement portable identity so users can migrate their account from one PDS to another without losing followers?**
+   - Expected: DID document contains current PDS endpoint. Migration updates the DID document. Followers follow the DID, not the server. Discuss cryptographic handoff and data transfer.
+
+### Estimation
+5. **Bluesky has 10 million users, averaging 100 events/user/day. Estimate the relay throughput requirements.**
+   - Expected: 10M × 100 = 1 billion events/day = ~11,600 events/sec. At 1KB/event = ~11 MB/sec. With App View fan-out to 10 consumers = 110 MB/sec. Manageable for a small cluster.
+
+---
+
+## Chapter 12: Tinder
+
+### Conceptual
+1. **Why does Tinder use bloom filters for tracking swiped users instead of a database query with NOT IN clause?**
+   - Expected: With 10,000+ swipes per user, NOT IN is O(n). Bloom filters give O(1) lookup with small false positive rate (acceptable: skip showing someone unnecessarily) and no false negatives (never show already-swiped).
+
+2. **Explain how ELO-style scoring creates a balanced matching ecosystem. What problems does it solve?**
+   - Expected: Without ELO, popular users get overwhelmed, unpopular users get no matches. ELO shows high-desirability users to each other first. System learns desirability from swipe behavior.
+
+### Design
+3. **Design the recommendation system that selects which profiles to show and in what order.**
+   - Expected: H3 cell query for nearby users, bloom filter to exclude swiped, preference filtering (age, gender), ELO/ML ranking. Discuss batch generation vs. real-time, caching, and handling the SuperLike priority queue.
+
+4. **How would you implement real-time match detection (both users swiped right) at 11,500 swipes/second?**
+   - Expected: On each right-swipe, check if reverse swipe exists. Index by (target_user, source_user) for O(1) lookup. Async notification pipeline. Handle the celebrity problem (batched notifications).
+
+### Estimation
+5. **Estimate the storage needed for bloom filters if 10 million users each have 10,000 swipes.**
+   - Expected: Bloom filter for 10K entries with 1% false positive ≈ 12KB. 10M users × 12KB = 120 GB. Fits in a Redis cluster. Plus swipe events: 10M × 10K × 20 bytes = 2 TB in persistent storage.
+
+---
+
+## Chapter 13: Uber
+
+### Conceptual
+1. **Why does Uber match on ETA (estimated time of arrival) rather than straight-line distance?**
+   - Expected: A driver 2 miles away across a river might be 15 minutes out. A driver 5 miles away on the same road might be 3 minutes. ETA accounts for roads, traffic, and routing. Distance is misleading.
+
+2. **Explain how H3 hexagonal indexing improves upon geohash for location queries.**
+   - Expected: Hexagons have 6 equidistant neighbors (consistent distances). Squares have 8 neighbors with varying distances. No edge discontinuity problem. Hierarchical resolution for different use cases.
+
+### Design
+3. **Design the location update system that handles 10+ million GPS updates per second.**
+   - Expected: Ring buffers (ephemeral, no disk write), H3 index updates only on cell boundary crossing (~10% of updates), sharding by H3 cell, eventual consistency acceptable for location data.
+
+4. **How would you implement batched dispatch matching to optimize global wait times rather than greedy per-ride matching?**
+   - Expected: Collect requests in 2-second windows, collect available drivers, solve assignment problem (Hungarian algorithm or approximation), batch offers. Discuss latency tradeoff vs. efficiency gain.
+
+### Estimation
+5. **5 million active drivers updating location every 4 seconds. Estimate the memory and bandwidth requirements.**
+   - Expected: 5M ÷ 4 = 1.25M updates/sec. At 50 bytes/update = 62.5 MB/sec inbound. Per-driver state: 800 bytes × 5M = 4 GB total. H3 index updates: ~125K/sec (10% cross cell boundaries).
+
+---
+
+## Chapter 14: Stock Exchange
+
+### Conceptual
+1. **Why do exchanges use a sequencer to assign order numbers rather than relying on timestamps?**
+   - Expected: At nanosecond scales, multiple orders arrive "simultaneously." Clocks drift. Sequencer creates a single, canonical, auditable order. Deterministic processing requires deterministic input ordering.
+
+2. **Explain why kernel bypass networking (DPDK, Solarflare) is essential for modern exchanges.**
+   - Expected: Normal path: NIC → Kernel → User space = ~10μs. Bypass path: NIC → User space = ~1μs. When competitors measure latency in microseconds, 9μs advantage is worth millions.
+
+### Design
+3. **Design an order book data structure that supports O(1) best bid/ask lookup and efficient order matching.**
+   - Expected: Two sorted maps (buy side descending by price, sell side ascending). At each price level, FIFO queue of orders. Best bid/ask at top. Matching walks from top until order filled.
+
+4. **How would you implement hot standby failover for a matching engine with <10 second recovery?**
+   - Expected: Secondary processes same sequenced events, maintains identical order book. Heartbeat failure detection. Atomic switchover. Journal replay to catch up if needed. Discuss state synchronization.
+
+### Estimation
+5. **An exchange processes 500,000 orders/second with 5 messages per order. Estimate the market data multicast bandwidth.**
+   - Expected: 500K × 5 = 2.5M messages/sec. At 100 bytes/message = 250 MB/sec. Unicast to 10,000 subscribers would be 2.5 TB/sec. Multicast: still 250 MB/sec. Hence multicast is essential.
+
+---
+
+## Chapter 15: Stripe
+
+### Conceptual
+1. **Why must idempotency keys be generated by the client rather than the server?**
+   - Expected: If server generates key and network fails before client receives it, client retries → new key → duplicate charge. Client-generated key survives network failures because client uses same key on retry.
+
+2. **What's the difference between idempotency and exactly-once semantics? Why does Stripe need reconciliation?**
+   - Expected: Idempotency prevents duplicate processing of retries. But partial failures can still occur (card charged, database write failed). Reconciliation catches edge cases: compare card network records with database, create/refund as needed.
+
+### Design
+3. **Design the idempotency cache system handling 1 billion requests/day with concurrent retry detection.**
+   - Expected: Redis cluster, key → (status, response), 24h TTL. Critical: handle in-flight requests with distributed locking. If status=PROCESSING, wait and poll. Fallback to database if cache fails.
+
+4. **How would you implement the distributed transaction for: charge card → save record → return response?**
+   - Expected: Not a traditional 2PC (can't coordinate with card networks). Instead: charge first, then save (can reconcile orphaned charges). Pending queue for uncertain states. Background reconciliation job.
+
+### Estimation
+5. **1 billion requests/day with 1KB average cache entry. Estimate the idempotency cache storage requirement.**
+   - Expected: 1B × 1KB = 1TB daily. With 24h TTL, max 1TB at any time. Redis cluster: 10 nodes × 100GB = 1TB. Add 50% headroom = 15 nodes. Cache hit rate for retries: ~5% of requests are retries.
+
+---
+
+## Chapters 16-18
+
+*(Coming soon: Following the same pattern as above)*
+
 ### Chapter 16: ChatGPT - Focus on GPU batching, KV cache, token streaming
 ### Chapter 17: Meta Serverless - Focus on cold start, scheduling, container management
 ### Chapter 18: Scaling - Focus on progressive architecture, when to add components
